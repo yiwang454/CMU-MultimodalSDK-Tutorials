@@ -84,7 +84,8 @@ def save_intervals(intervals, feature_type, folder, video_number):
     if type(intervals) != list:
         intervals = intervals.tolist()
     json.dump(intervals, codecs.open(file_name + ext, 'w', encoding='utf-8'), indent=4)
-     
+    
+
 class new_mmdataset(md.mmdataset):
     #TODO: Need tqdm bar for this as well
     def get_relevant_entries(self,reference):
@@ -99,8 +100,8 @@ class new_mmdataset(md.mmdataset):
             relevant_entries_np[otherseq_key]={}
             sub_compseq=self.computational_sequences[otherseq_key]
             # for some_id in all video ids
-            for key in list(sub_compseq.data.keys()):            
-                keystripped=key.split('[')[0]                  
+            for key in list(sub_compseq.data.keys()):
+                keystripped=key.split('[')[0]
                 if keystripped not in relevant_entries[otherseq_key]:                           
                     relevant_entries[otherseq_key][keystripped]={}
                     relevant_entries[otherseq_key][keystripped]["intervals"]=[]                     
@@ -128,42 +129,57 @@ class new_mmdataset(md.mmdataset):
             log.status("Pre-alignment done for <%s> ..."%otherseq_key)
         return relevant_entries_np
     
-    def intersect_and_copy_upsampling(self, ref_time,relevant_entry,epsilon, log_file, feature_info):
-        #ref_time: interval [start, end] of the reference feature
+    def intersect_and_copy_upsampling(self, ref_all, relevant_entry, epsilon, log_file, feature_info):
+        #ref_all: reference_entries[other_key][entry_key]['intervals'] e.g. [COVAREP][some video id]['intervals']
         #relevant_entry: relevant_entries[other_key][entry_key] e.g. [COVAREP][some video id]
         #epsilon: error allowed in alignment
         #ref_time < one interval in relevant_entry
+        
+        pbar_small=log.progress_bar(total=ref_all.shape[0],unit=" Segments",leave=False)
+        pbar_small.set_description("Aligning: " + feature_info)
         
         sub=relevant_entry["intervals"]
         features=relevant_entry["features"]
         
         #finding where intersect happens
-        where_intersect = -1
-        for i, inter in enumerate(sub):
-            if (ref_time[0] - inter[0]) > (-epsilon) and (inter[1] - ref_time[0]) > (-epsilon):
-                where_intersect = i
-        if where_intersect == -1:
-            diff = list(map(lambda x: abs(ref_time[0] - x), sub[:, 0]))
-            min_diff = min(diff)
-            where_intersect = diff.index(min_diff)
-            with open(log_file, 'w+') as fi:
-                fi.write('no corresponding frame, find the closest one, {}, difference: {}\n'.format(feature_info, min_diff))
-            
+        pointer_b = 0 # for relevant_entry
+        aligned_sub = []
+        aligned_feature = []
         
-        intersectors=sub[where_intersect,:]
-        intersectors_features=features[where_intersect,:]
+        for i, inter in enumerate(ref_all):
+            #print(pointer_b)
+            if (abs(inter[0]-inter[1])<epsilon):
+                pbar_small.update(1)
+                continue
+            pointer_c = pointer_b
+            while(pointer_c < sub.shape[0]):
+                if (inter[0] - sub[pointer_c][0]) > (-epsilon) and (sub[pointer_c][1] - inter[0]) > (-epsilon):
+                    aligned_sub.append(sub[pointer_c])
+                    aligned_feature.append(features[pointer_c])
+                    break
+                else:
+                    pointer_c += 1
+                
+            if pointer_c == sub.shape[0]:
+                diff = list(map(lambda x: abs(inter[0] - x), sub[:, 0]))
+                min_diff = min(diff)
+                pointer_c = diff.index(min_diff)
+                with open(log_file, 'w+') as fi:
+                    fi.write('no corresponding frame, find the closest one, {}, difference: {}\n'.format(feature_info, min_diff))
+                aligned_sub.append(sub[pointer_c])
+                aligned_feature.append(features[pointer_c])
+            else:
+                pointer_b = pointer_c
+
+            pbar_small.update(1)
         
-        zero_idx = np.where(np.isinf(intersectors_features))
-        intersectors_features[zero_idx] = 0
-        
-        #checking for boundary cases and also zero length
-        
-        #where_nonzero_len=numpy.where(abs(intersectors[0]-intersectors[1])>epsilon)
-        #intersectors_final=intersectors[where_nonzero_len]
-        #intersectors_features_final=intersectors_features[where_nonzero_len]      
-        intersectors = np.array([intersectors])
-        intersectors_features = np.array([intersectors_features])
-        return intersectors,intersectors_features
+        aligned_sub = np.array(aligned_sub)
+        aligned_feature = np.array(aligned_feature)
+        zero_idx = np.where(np.isinf(aligned_feature))
+        aligned_feature[zero_idx] = 0
+
+        pbar_small.close()
+        return aligned_sub,aligned_feature
     
     def align_upsampling_and_save(self, reference, id_idx, collapse_function=None, epsilon = 10e-6):
         folder = '/data/mifs_scratch/yw454/cmumosei_aligned'
@@ -198,56 +214,37 @@ class new_mmdataset(md.mmdataset):
             
             if entry_key in id_idx:
                 stored_idx = id_idx.index(entry_key)
-                if stored_idx <= 104:
+                #if stored_idx < 104 or (stored_idx > 104 and stored_idx < 1781):
+                if stored_idx < 1781 or stored_idx == 1815:
                     continue
             
             all_intersects = {}
             all_intersect_features = {}
             
-            for sequence_name in self.computational_sequences.keys():
-                all_intersects[sequence_name] = []
-                all_intersect_features[sequence_name] = []
+            #for sequence_name in self.computational_sequences.keys():
+            #    all_intersects[sequence_name] = []
+            #    all_intersect_features[sequence_name] = []
             
-            pbar_small=log.progress_bar(total=refseq[entry_key]['intervals'].shape[0],unit=" Segments",leave=False)
-            pbar_small.set_description("Aligning %s"%entry_key)
-            
-            #for one in number of intervals of this video
-            for i in range(refseq[entry_key]['intervals'].shape[0]):
-                #get interval time for the reference sequence
-                ref_time=refseq[entry_key]['intervals'][i,:]
-                #we drop zero or very small sequence lengths - no align for those
-                if (abs(ref_time[0]-ref_time[1])<epsilon):
-                    pbar_small.update(1)
-                    continue
-                #aligning all sequences (including ref sequence) to ref sequence
-                #otherseq_key: other features; entry_key: some video id
+            ref_all=refseq[entry_key]['intervals']
                 
-                for otherseq_key in list(self.computational_sequences.keys()):
-                    if otherseq_key != reference:
-                        feature_info = 'reference: {}, other feature {}, video id: {}'.format(reference, otherseq_key, entry_key)
-                        intersects,intersects_features=self.intersect_and_copy_upsampling(ref_time,relevant_entries[otherseq_key][entry_key],epsilon, log_file, feature_info)
-                    else:
-                        intersects,intersects_features=refseq[entry_key]['intervals'][i,:][None,:],refseq[entry_key]['features'][i,:][None,:]
-                    
-                    #there were no intersections between reference and subject computational sequences for the entry
-                    if intersects.shape[0] == 0:
-                        continue
-                    #no collapsing needed for upsampling
-                    if(intersects.shape[0]!=intersects_features.shape[0]):
-                        log.error("Dimension mismatch between intervals and features when aligning <%s> computational sequences to <%s> computational sequence"%(otherseq_key,reference),error=True)
-                    
-                    intersects = intersects.tolist()
-                    intersects_features = intersects_features.tolist()
-                    #print(type(intersects[0]))
-                    #print(type(intersects_features[0]))
-                    #print(len(intersects[0]))
-                    #print(len(intersects_features[0]))
-                    all_intersects[otherseq_key].extend(intersects)
-                    all_intersect_features[otherseq_key].extend(intersects_features)
-                    
-                pbar_small.update(1)
+            #aligning all sequences to ref sequence (previous: align refer to refer as well, now: not include refer)
+            #otherseq_key: other features; entry_key: some video id
                 
-                
+            for otherseq_key in list(self.computational_sequences.keys()):
+                if otherseq_key != reference:
+                    feature_info = 'reference: {}, other feature {}, video id: {}'.format(reference, otherseq_key, entry_key)
+                    intersects,intersects_features=self.intersect_and_copy_upsampling(ref_all,relevant_entries[otherseq_key][entry_key],epsilon, log_file, feature_info)
+                else:
+                    intersects,intersects_features=refseq[entry_key]['intervals'][:,:],refseq[entry_key]['features'][:,:]
+                    
+                #print(type(intersects[0]))
+                #print(type(intersects_features[0]))
+                #print(len(intersects[0]))
+                #print(len(intersects_features[0]))
+                all_intersects[otherseq_key] = intersects
+                all_intersect_features[otherseq_key] = intersects_features
+                    
+
             #save features per video
             for sequence_name in self.computational_sequences.keys():
                 video_code = id_idx.index(entry_key)
@@ -257,9 +254,9 @@ class new_mmdataset(md.mmdataset):
                 save_intervals(all_intersects[sequence_name], sequence_name, folder, video_code)
                 print('alignment saved for video {}.'.format(video_code))
             
-            pbar_small.close()
             pbar.update(1)
         pbar.close()
+
 
 
 # define your different modalities - refer to the filenames of the CSD files
