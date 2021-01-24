@@ -252,7 +252,7 @@ class new_mmdataset(md.mmdataset):
                 
                 save_htk_format(all_intersect_features[sequence_name], sequence_name, folder, video_code)
                 save_intervals(all_intersects[sequence_name], sequence_name, folder, video_code)
-                print('alignment saved for video {}.'.format(video_code))
+                print('alignment saved for video {} feature {}.'.format(video_code, sequence_name))
             
             pbar.update(1)
         pbar.close()
